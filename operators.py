@@ -652,14 +652,12 @@ class SCULPTLAYERS_OT_add_layer(Operator):
         except Exception:
             pass
 
-        # Focus viewport on new layer (same as numpad '.')
-        _focus_view_on_object(context, new_obj)
-
-        if getattr(settings, "auto_sculpt_mode", False):
-            try:
-                bpy.ops.object.mode_set(mode='SCULPT')
-            except Exception as e:
-                print(f"Sculpt Layers: could not enter Sculpt Mode: {e}")
+        # Focus new layer first; enter Sculpt Mode after focus if enabled
+        _focus_view_on_object(
+            context,
+            new_obj,
+            enter_sculpt=bool(getattr(settings, "auto_sculpt_mode", False)),
+        )
 
         self.report(
             {'INFO'},

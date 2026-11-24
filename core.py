@@ -1162,17 +1162,18 @@ def _erase_multires_displacement(obj):
 
 
 _pending_focus_name = None
+_pending_focus_enter_sculpt = False
 
 
-def _focus_view_on_object(context, obj):
+def _focus_view_on_object(context, obj, enter_sculpt=False):
     """
-    Frame viewport on obj with Smooth View (numpad '.').
+    Smooth-frame viewport on obj only (numpad '.').
 
-    Selection is applied immediately; view_selected is deferred to the next
-    timer tick so it runs outside the operator stack — same path as a real
-    keypress, which is what makes Smooth View animate properly.
+    Other visible meshes are temporarily hidden so view_selected does not
+    frame Base + offset layer together (which put the new mesh in a corner).
+    Smooth View is kept via INVOKE_DEFAULT. Sculpt Mode runs after focus.
     """
-    global _pending_focus_name
+    global _pending_focus_name, _pending_focus_enter_sculpt
     if obj is None:
         return
     try:
@@ -1186,28 +1187,62 @@ def _focus_view_on_object(context, obj):
         pass
 
     _pending_focus_name = obj.name
+    _pending_focus_enter_sculpt = bool(enter_sculpt)
 
-    def _deferred_view_selected():
-        global _pending_focus_name
+    def _deferred_focus():
+        global _pending_focus_name, _pending_focus_enter_sculpt
         name = _pending_focus_name
+        do_sculpt = _pending_focus_enter_sculpt
         _pending_focus_name = None
+        _pending_focus_enter_sculpt = False
         if not name:
             return None
         target = bpy.data.objects.get(name)
         if target is None:
             return None
+
+        # Snapshot + hide every other visible mesh so framing is only target
+        hidden = []
         try:
-            # Re-assert selection (another handler may have changed it)
+            for o in list(bpy.context.view_layer.objects):
+                if o == target:
+                    continue
+                if o.type != 'MESH':
+                    continue
+                try:
+                    was_vp = bool(o.hide_viewport)
+                    was_h = bool(o.hide_get())
+                    if not was_vp and not was_h:
+                        hidden.append((o, was_vp, was_h))
+                        o.hide_viewport = True
+                        try:
+                            o.hide_set(True)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+        except Exception:
+            hidden = []
+
+        try:
             for o in list(bpy.context.view_layer.objects):
                 try:
                     o.select_set(o == target)
                 except Exception:
                     pass
+            target.hide_viewport = False
+            try:
+                target.hide_set(False)
+            except Exception:
+                pass
+            target.hide_select = False
+            target.select_set(True)
             bpy.context.view_layer.objects.active = target
+            bpy.context.view_layer.update()
         except Exception:
             pass
 
-        # Prefer a real VIEW_3D region so Smooth View has a valid region
+        # Smooth View on the new mesh only
         try:
             for window in bpy.context.window_manager.windows:
                 screen = window.screen
@@ -1223,22 +1258,47 @@ def _focus_view_on_object(context, obj):
                             bpy.ops.view3d.view_selected(
                                 'INVOKE_DEFAULT', use_all_regions=False
                             )
-                        return None
+                        break
+                    else:
+                        continue
+                    break
         except Exception:
-            pass
-        try:
-            bpy.ops.view3d.view_selected('INVOKE_DEFAULT', use_all_regions=False)
-        except Exception:
-            pass
+            try:
+                bpy.ops.view3d.view_selected('INVOKE_DEFAULT', use_all_regions=False)
+            except Exception:
+                pass
+
+        # Restore other meshes
+        for o, was_vp, was_h in hidden:
+            try:
+                o.hide_viewport = was_vp
+                try:
+                    o.hide_set(was_h)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        # Enter Sculpt Mode after focus (on new mesh)
+        if do_sculpt and target is not None:
+            try:
+                for o in list(bpy.context.view_layer.objects):
+                    try:
+                        o.select_set(o == target)
+                    except Exception:
+                        pass
+                bpy.context.view_layer.objects.active = target
+                if bpy.context.mode != 'SCULPT':
+                    bpy.ops.object.mode_set(mode='SCULPT')
+            except Exception as e:
+                print(f"Sculpt Layers: could not enter Sculpt Mode after focus: {e}")
         return None
 
     try:
-        # Small delay so Add Layer finishes redraw first
-        bpy.app.timers.register(_deferred_view_selected, first_interval=0.01)
+        bpy.app.timers.register(_deferred_focus, first_interval=0.05)
     except Exception:
-        # Fallback: call immediately if timers unavailable
         try:
-            _deferred_view_selected()
+            _deferred_focus()
         except Exception:
             pass
 
